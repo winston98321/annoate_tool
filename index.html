@@ -92,6 +92,17 @@
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
+        document.addEventListener('keydown', function(event) {
+            if (event.ctrlKey && event.key === 'z') { 
+                // Ctrl + Z: 復原
+                event.preventDefault();
+                handleUndo();
+            } else if (event.ctrlKey && event.key === 'a') { 
+                // Ctrl + A: 完成多邊形
+                event.preventDefault();
+                finishPolygon();
+            }
+        });
 
         function toggleTool(tool) {
             currentTool = tool;
@@ -285,7 +296,7 @@
                         version: "5.0.1",
                         flags: {},
                         shapes: annotations.map((polygon, index) => ({
-                            label: `spine_${index + 1}`,
+                            label: `spine`,
                             points: polygon.map(p => [p.x, p.y]),
                             group_id: null,
                             shape_type: "polygon",
