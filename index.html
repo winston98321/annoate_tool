@@ -1,215 +1,222 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Upload, Save, Undo, ChevronLeft, ChevronRight } from 'lucide-react';
-
-const ImageAnnotator = () => {
-  const [images, setImages] = useState([]);
-  const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [points, setPoints] = useState({});  // 用物件來儲存每張圖片的點
-  const canvasRef = useRef(null);
-
-  const handleFolderUpload = (event) => {
-    const files = Array.from(event.target.files).filter(file => 
-      file.type.startsWith('image/')
-    );
-
-    Promise.all(files.map(file => {
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const img = new Image();
-          img.onload = () => {
-            resolve({
-              file: file,
-              img: img,
-              name: file.name
-            });
-          };
-          img.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
-      });
-    })).then(loadedImages => {
-      setImages(loadedImages);
-      setPoints(loadedImages.reduce((acc, img) => {
-        acc[img.name] = [];
-        return acc;
-      }, {}));
-      setCurrentImageIndex(0);
-    });
-  };
-
-  const getCurrentImage = () => {
-    return images[currentImageIndex]?.img;
-  };
-
-  const getCurrentImageName = () => {
-    return images[currentImageIndex]?.name;
-  };
-
-  const drawImage = () => {
-    const currentImage = getCurrentImage();
-    if (!currentImage) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    canvas.width = currentImage.width;
-    canvas.height = currentImage.height;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(currentImage, 0, 0);
-    
-    const currentPoints = points[getCurrentImageName()] || [];
-    if (currentPoints.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(currentPoints[0].x, currentPoints[0].y);
-      currentPoints.forEach((point, index) => {
-        if (index > 0) {
-          ctx.lineTo(point.x, point.y);
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圖像標註工具</title>
+    <!-- 從 CDN 加載 JSZip -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
         }
-      });
-      if (currentPoints.length > 2) {
-        ctx.closePath();
-      }
-      ctx.strokeStyle = '#00ff00';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-  };
-
-  const handleCanvasClick = (event) => {
-    const currentImage = getCurrentImage();
-    if (!currentImage) return;
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+        .canvas-container {
+            position: relative;
+            border: 1px solid #ccc;
+            margin-top: 20px;
+        }
+        canvas {
+            max-width: 100%;
+            height: auto;
+        }
+        .navigation {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="document.getElementById('folderInput').click()">上傳資料夾</button>
+        <button onclick="handleUndo()" id="undoBtn" disabled>復原</button>
+        <button onclick="handleSaveAll()" id="saveBtn" disabled>儲存全部</button>
+        <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none" onchange="handleFolderUpload(event)">
+    </div>
     
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    
-    const imageName = getCurrentImageName();
-    const currentPoints = [...(points[imageName] || [])];
-    currentPoints.push({ x, y });
-    setPoints({ ...points, [imageName]: currentPoints });
-  };
+    <div class="navigation">
+        <button onclick="navigateImage(-1)" id="prevBtn" disabled>上一張</button>
+        <span id="imageInfo"></span>
+        <button onclick="navigateImage(1)" id="nextBtn" disabled>下一張</button>
+    </div>
 
-  const handleUndo = () => {
-    const imageName = getCurrentImageName();
-    const currentPoints = points[imageName] || [];
-    if (currentPoints.length > 0) {
-      const newPoints = currentPoints.slice(0, -1);
-      setPoints({ ...points, [imageName]: newPoints });
-    }
-  };
+    <div class="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
 
-  const handleSaveAll = () => {
-    const annotations = {};
-    
-    images.forEach(image => {
-      const imagePoints = points[image.name] || [];
-      if (imagePoints.length >= 3) {
-        annotations[image.name] = {
-          version: "5.0.1",
-          flags: {},
-          shapes: [
-            {
-              label: "spine",
-              points: imagePoints.map(p => [p.x, p.y]),
-              group_id: null,
-              shape_type: "polygon",
-              flags: {}
+    <script>
+        let images = [];
+        let currentImageIndex = 0;
+        let points = {};
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        function handleFolderUpload(event) {
+            const files = Array.from(event.target.files).filter(file => 
+                file.type.startsWith('image/')
+            );
+
+            Promise.all(files.map(file => {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            resolve({
+                                file: file,
+                                img: img,
+                                name: file.name
+                            });
+                        };
+                        img.src = e.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                });
+            })).then(loadedImages => {
+                images = loadedImages;
+                points = loadedImages.reduce((acc, img) => {
+                    acc[img.name] = [];
+                    return acc;
+                }, {});
+                currentImageIndex = 0;
+                updateUI();
+                drawImage();
+            });
+        }
+
+        function getCurrentImage() {
+            return images[currentImageIndex]?.img;
+        }
+
+        function getCurrentImageName() {
+            return images[currentImageIndex]?.name;
+        }
+
+        function drawImage() {
+            const currentImage = getCurrentImage();
+            if (!currentImage) return;
+
+            canvas.width = currentImage.width;
+            canvas.height = currentImage.height;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(currentImage, 0, 0);
+            
+            const currentPoints = points[getCurrentImageName()] || [];
+            if (currentPoints.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(currentPoints[0].x, currentPoints[0].y);
+                currentPoints.forEach((point, index) => {
+                    if (index > 0) {
+                        ctx.lineTo(point.x, point.y);
+                    }
+                });
+                if (currentPoints.length > 2) {
+                    ctx.closePath();
+                }
+                ctx.strokeStyle = '#00ff00';
+                ctx.lineWidth = 2;
+                ctx.stroke();
             }
-          ],
-          imagePath: image.name,
-          imageHeight: image.img.height,
-          imageWidth: image.img.width
-        };
-      }
-    });
+        }
 
-    // 建立包含所有標註的 ZIP 檔案
-    const zip = new JSZip();
-    Object.entries(annotations).forEach(([filename, data]) => {
-      zip.file(`${filename.split('.')[0]}.json`, JSON.stringify(data, null, 2));
-    });
+        canvas.addEventListener('click', function(event) {
+            const currentImage = getCurrentImage();
+            if (!currentImage) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (event.clientX - rect.left) * scaleX;
+            const y = (event.clientY - rect.top) * scaleY;
+            
+            const imageName = getCurrentImageName();
+            const currentPoints = [...(points[imageName] || [])];
+            currentPoints.push({ x, y });
+            points[imageName] = currentPoints;
+            drawImage();
+            updateUI();
+        });
 
-    zip.generateAsync({ type: "blob" }).then(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'annotations.zip';
-      a.click();
-      URL.revokeObjectURL(url);
-    });
-  };
+        function handleUndo() {
+            const imageName = getCurrentImageName();
+            const currentPoints = points[imageName] || [];
+            if (currentPoints.length > 0) {
+                points[imageName] = currentPoints.slice(0, -1);
+                drawImage();
+                updateUI();
+            }
+        }
 
-  const navigateImage = (direction) => {
-    const newIndex = currentImageIndex + direction;
-    if (newIndex >= 0 && newIndex < images.length) {
-      setCurrentImageIndex(newIndex);
-    }
-  };
+        async function handleSaveAll() {
+            const zip = new JSZip();
+            
+            images.forEach(image => {
+                const imagePoints = points[image.name] || [];
+                if (imagePoints.length >= 3) {
+                    const annotation = {
+                        version: "5.0.1",
+                        flags: {},
+                        shapes: [
+                            {
+                                label: "spine",
+                                points: imagePoints.map(p => [p.x, p.y]),
+                                group_id: null,
+                                shape_type: "polygon",
+                                flags: {}
+                            }
+                        ],
+                        imagePath: image.name,
+                        imageHeight: image.img.height,
+                        imageWidth: image.img.width
+                    };
+                    zip.file(`${image.name.split('.')[0]}.json`, JSON.stringify(annotation, null, 2));
+                }
+            });
 
-  useEffect(() => {
-    drawImage();
-  }, [currentImageIndex, points]);
+            const blob = await zip.generateAsync({ type: "blob" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'annotations.zip';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
 
-  return (
-    <Card className="w-full max-w-4xl mx-auto my-4">
-      <CardHeader>
-        <CardTitle>資料夾圖像標註工具</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col gap-4">
-          <div className="flex gap-4">
-            <Button className="flex items-center gap-2" onClick={() => document.getElementById('folderInput').click()}>
-              <Upload size={16} />
-              上傳資料夾
-            </Button>
-            <Button className="flex items-center gap-2" onClick={handleUndo} disabled={!getCurrentImage()}>
-              <Undo size={16} />
-              復原
-            </Button>
-            <Button className="flex items-center gap-2" onClick={handleSaveAll} disabled={images.length === 0}>
-              <Save size={16} />
-              儲存全部
-            </Button>
-          </div>
-          
-          <input
-            id="folderInput"
-            type="file"
-            webkitdirectory="true"
-            directory="true"
-            multiple
-            onChange={handleFolderUpload}
-            className="hidden"
-          />
+        function navigateImage(direction) {
+            const newIndex = currentImageIndex + direction;
+            if (newIndex >= 0 && newIndex < images.length) {
+                currentImageIndex = newIndex;
+                drawImage();
+                updateUI();
+            }
+        }
 
-          {getCurrentImage() && (
-            <div className="flex items-center justify-between mb-2">
-              <Button onClick={() => navigateImage(-1)} disabled={currentImageIndex === 0}>
-                <ChevronLeft size={16} />
-              </Button>
-              <span className="text-sm">
-                {getCurrentImageName()} ({currentImageIndex + 1} / {images.length})
-              </span>
-              <Button onClick={() => navigateImage(1)} disabled={currentImageIndex === images.length - 1}>
-                <ChevronRight size={16} />
-              </Button>
-            </div>
-          )}
-
-          <div className="relative border rounded-lg overflow-hidden">
-            <canvas
-              ref={canvasRef}
-              onClick={handleCanvasClick}
-              className="cursor-crosshair"
-              style={{ maxWidth: '100%', height: 'auto' }}
-            />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-};
-
-export default ImageAnnotator;
+        function updateUI() {
+            const hasImages = images.length > 0;
+            document.getElementById('undoBtn').disabled = !hasImages;
+            document.getElementById('saveBtn').disabled = !hasImages;
+            document.getElementById('prevBtn').disabled = currentImageIndex === 0;
+            document.getElementById('nextBtn').disabled = currentImageIndex === images.length - 1;
+            
+            if (hasImages) {
+                document.getElementById('imageInfo').textContent = 
+                    `${getCurrentImageName()} (${currentImageIndex + 1} / ${images.length})`;
+            } else {
+                document.getElementById('imageInfo').textContent = '';
+            }
+        }
+    </script>
+</body>
+</html>
