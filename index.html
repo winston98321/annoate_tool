@@ -42,6 +42,7 @@
         canvas.eraser {
             cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" style="font-size: 20px;"><text y="18">🗑️</text></svg>'), auto;
         }
+        
         .navigation {
             display: flex;
             align-items: center;
@@ -218,14 +219,28 @@
 
         canvas.addEventListener('click', function(event) {
             if (!getCurrentImage()) return;
-            
+
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
             const x = (event.clientX - rect.left) * scaleX;
             const y = (event.clientY - rect.top) * scaleY;
-            
+
             if (currentTool === 'polygon') {
+                if (currentPoints.length > 0) {
+                    // 檢查是否接近第一個點（範圍內自動閉合）
+                    const firstPoint = currentPoints[0];
+                    const distance = Math.sqrt(
+                        Math.pow(x - firstPoint.x, 2) + Math.pow(y - firstPoint.y, 2)
+                    );
+                    if (distance < 10) {
+                        // 距離小於 10px，自動連接到第一個點並完成多邊形
+                        finishPolygon();
+                        return;
+                    }
+                }
+
+                // 正常新增點
                 currentPoints.push({ x, y });
                 document.getElementById('finishBtn').disabled = currentPoints.length < 3;
                 drawImage();
@@ -244,6 +259,7 @@
                 }
             }
         });
+
 
         function isPointInPolygon(point, polygon) {
             let inside = false;
