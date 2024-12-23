@@ -60,6 +60,7 @@
 <body>
     <div class="controls">
         <button onclick="document.getElementById('folderInput').click()">上傳資料夾</button>
+        <button onclick="toggleTool('hexagon')" id="hexagonBtn">繪製六邊形</button>
         <button onclick="toggleTool('polygon')" id="polygonBtn">繪製多邊形</button>
         <button onclick="toggleTool('eraser')" id="eraserBtn">擦除</button>
         <button onclick="finishPolygon()" id="finishBtn" disabled>完成多邊形</button>
@@ -90,6 +91,9 @@
         let currentPoints = [];     // 目前正在繪製的多邊形的點
         let currentTool = 'polygon';
         let isDrawing = false;
+        let imageLoadQueue = []; // 待載入的圖片佇列
+        let isLoadingImages = false; // 是否正在載入圖片
+
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
@@ -114,40 +118,80 @@
         function toggleTool(tool) {
             currentTool = tool;
             document.getElementById('polygonBtn').classList.toggle('active', tool === 'polygon');
+            document.getElementById('hexagonBtn').classList.toggle('active', tool === 'hexagon'); // 新增六邊形按鈕
             document.getElementById('eraserBtn').classList.toggle('active', tool === 'eraser');
             canvas.classList.toggle('eraser', tool === 'eraser');
         }
 
-        function handleFolderUpload(event) {
-            const files = Array.from(event.target.files).filter(file => 
+        async function handleFolderUpload(event) {
+            // 將所有圖片檔案加入佇列
+            imageLoadQueue = Array.from(event.target.files).filter(file => 
                 file.type.startsWith('image/')
             );
+            
+            // 重置相關變數
+            images = [];
+            currentImageIndex = 0;
+            imageAnnotations = {};
+            isLoadingImages = true;
+            
+            // 建立進度顯示元素
+            const progressDiv = document.createElement('div');
+            progressDiv.id = 'loadingProgress';
+            progressDiv.style.margin = '10px 0';
+            document.querySelector('.controls').appendChild(progressDiv);
+            
+            // 開始載入第一張圖片
+            await loadNextImage();
+        }
 
-            Promise.all(files.map(file => {
-                return new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const img = new Image();
-                        img.onload = () => {
-                            resolve({
-                                file: file,
-                                img: img,
-                                name: file.name
-                            });
-                        };
-                        img.src = e.target.result;
-                    };
-                    reader.readAsDataURL(file);
-                });
-            })).then(loadedImages => {
-                images = loadedImages;
-                imageAnnotations = loadedImages.reduce((acc, img) => {
-                    acc[img.name] = [];
-                    return acc;
-                }, {});
-                currentImageIndex = 0;
+        async function loadNextImage() {
+            if (imageLoadQueue.length === 0) {
+                isLoadingImages = false;
+                const progressDiv = document.getElementById('loadingProgress');
+                if (progressDiv) progressDiv.remove();
                 updateUI();
-                drawImage();
+                return;
+            }
+            
+            const file = imageLoadQueue.shift();
+            const progressDiv = document.getElementById('loadingProgress');
+            progressDiv.textContent = `正在載入: ${file.name} (${images.length + 1}/${images.length + 1 + imageLoadQueue.length})`;
+            
+            try {
+                const imgData = await loadSingleImage(file);
+                images.push(imgData);
+                imageAnnotations[imgData.name] = [];
+                
+                // 如果這是第一張圖片，立即顯示
+                if (images.length === 1) {
+                    drawImage();
+                    updateUI();
+                }
+                
+                // 繼續載入下一張
+                await loadNextImage();
+            } catch (error) {
+                console.error(`Error loading image ${file.name}:`, error);
+                await loadNextImage(); // 跳過錯誤的圖片繼續載入
+            }
+        }
+
+        function loadSingleImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => resolve({
+                        file: file,
+                        img: img,
+                        name: file.name
+                    });
+                    img.onerror = () => reject(new Error(`Failed to load image: ${file.name}`));
+                    img.src = e.target.result;
+                };
+                reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
+                reader.readAsDataURL(file);
             });
         }
 
@@ -163,44 +207,80 @@
             const currentImage = getCurrentImage();
             if (!currentImage) return;
 
+            // 设置画布大小
             canvas.width = currentImage.width;
             canvas.height = currentImage.height;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(currentImage, 0, 0);
-            
-            // 繪製已完成的多邊形
+
+            // 调试输出：检查画布和上下文
+            console.log("Canvas size:", canvas.width, canvas.height);
+            console.log("Annotations:", imageAnnotations[getCurrentImageName()]);
+            console.log("Current points:", currentPoints);
+
+            // 绘制已完成的多边形
             const currentAnnotations = imageAnnotations[getCurrentImageName()] || [];
             currentAnnotations.forEach((polygon, index) => {
+                if (polygon.length < 2) return; // 确保至少有两个点
                 ctx.beginPath();
                 ctx.moveTo(polygon[0].x, polygon[0].y);
                 polygon.forEach((point, i) => {
                     if (i > 0) ctx.lineTo(point.x, point.y);
                 });
                 ctx.closePath();
-                ctx.strokeStyle = '#00ff00';
-                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#00ff00'; // 绿色边线
+                ctx.lineWidth = 2; // 边线宽度
                 ctx.stroke();
-                
-                // 繪製多邊形編號
+
+                // 绘制每个点
+                polygon.forEach((point, i) => {
+                    // 标注点的位置
+                    ctx.fillStyle = '#ff0000'; // 点的颜色
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI); // 绘制小圆圈表示点
+                    ctx.fill();
+
+                    // 显示点的编号
+                    ctx.fillStyle = '#000000'; // 编号颜色
+                    ctx.font = '12px Arial';
+                    ctx.fillText(`P${i + 1}`, point.x + 5, point.y - 5); // 在点旁边显示点的编号
+                });
+
+                // 绘制多边形编号
                 const centerX = polygon.reduce((sum, p) => sum + p.x, 0) / polygon.length;
                 const centerY = polygon.reduce((sum, p) => sum + p.y, 0) / polygon.length;
-                ctx.fillStyle = '#00ff00';
+                ctx.fillStyle = '#00ff00'; // 编号颜色
                 ctx.font = '16px Arial';
                 ctx.fillText(index + 1, centerX, centerY);
             });
-            
-            // 繪製正在繪製的多邊形
+
+            // 绘制正在绘制的多边形
             if (currentPoints.length > 0) {
                 ctx.beginPath();
-                ctx.moveTo(currentPoints[0].x, currentPoints[0].y);
+                ctx.moveTo(currentPoints[0].x, currentPoints[0].y); // 起始点
                 currentPoints.forEach((point, index) => {
-                    if (index > 0) ctx.lineTo(point.x, point.y);
+                    if (index > 0) ctx.lineTo(point.x, point.y); // 连线到下一个点
                 });
-                ctx.strokeStyle = '#ff0000';
-                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#ff0000'; // 红色边线
+                ctx.lineWidth = 2; // 边线宽度
                 ctx.stroke();
+
+                // 绘制正在绘制的点
+                currentPoints.forEach((point, index) => {
+                    // 标注点的位置
+                    ctx.fillStyle = '#ff0000'; // 点的颜色
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI); // 绘制小圆圈表示点
+                    ctx.fill();
+
+                    // 显示点的编号
+                    ctx.fillStyle = '#000000'; // 编号颜色
+                    ctx.font = '12px Arial';
+                    ctx.fillText(`P${index + 1}`, point.x + 5, point.y - 5); // 在点旁边显示点的编号
+                });
             }
 
+            // 更新多边形列表
             updatePolygonList();
         }
 
@@ -232,29 +312,42 @@
             const x = (event.clientX - rect.left) * scaleX;
             const y = (event.clientY - rect.top) * scaleY;
 
-            if (currentTool === 'polygon') {
+            if (currentTool === 'hexagon') {
+                // 繪製六頂點形狀
+                if (currentPoints.length < 6) {
+                    currentPoints.push({ x, y });
+                    if (currentPoints.length === 6) {
+                        // 當6點完成後，自動加入至註解
+                        const imageName = getCurrentImageName();
+                        if (!imageAnnotations[imageName]) {
+                            imageAnnotations[imageName] = [];
+                        }
+                        imageAnnotations[imageName].push([...currentPoints]);
+                        currentPoints = [];
+                        drawImage();
+                    }
+                }
+                drawImage();
+            } else if (currentTool === 'polygon') {
+                // 原有多邊形繪製邏輯
                 if (currentPoints.length > 0) {
-                    // 檢查是否接近第一個點（範圍內自動閉合）
                     const firstPoint = currentPoints[0];
                     const distance = Math.sqrt(
                         Math.pow(x - firstPoint.x, 2) + Math.pow(y - firstPoint.y, 2)
                     );
                     if (distance < 10) {
-                        // 距離小於 10px，自動連接到第一個點並完成多邊形
                         finishPolygon();
                         return;
                     }
                 }
-
-                // 正常新增點
                 currentPoints.push({ x, y });
                 document.getElementById('finishBtn').disabled = currentPoints.length < 3;
                 drawImage();
             } else if (currentTool === 'eraser') {
+                // 原有擦除邏輯
                 const imageName = getCurrentImageName();
                 const annotations = imageAnnotations[imageName];
                 if (annotations) {
-                    // 檢查點擊是否在任何多邊形內
                     for (let i = annotations.length - 1; i >= 0; i--) {
                         if (isPointInPolygon({ x, y }, annotations[i])) {
                             annotations.splice(i, 1);
@@ -310,7 +403,16 @@
 
         async function handleSaveAll() {
             const zip = new JSZip();
-            
+
+            const getBase64 = (img) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                return canvas.toDataURL('image/jpeg').split(',')[1];
+            };
+
             images.forEach(image => {
                 const annotations = imageAnnotations[image.name] || [];
                 if (annotations.length > 0) {
@@ -318,28 +420,61 @@
                         version: "5.0.1",
                         flags: {},
                         shapes: annotations.map((polygon, index) => ({
-                            label: `spine`,
-                            points: polygon.map(p => [p.x, p.y]),
+                            label: "spine",
+                            points: polygon.map(p => [Math.round(p.x), Math.round(p.y)]),
                             group_id: null,
                             shape_type: "polygon",
                             flags: {}
                         })),
+                        imageData: getBase64(image.img),
                         imagePath: image.name,
                         imageHeight: image.img.height,
                         imageWidth: image.img.width
                     };
-                    zip.file(`${image.name.split('.')[0]}.json`, JSON.stringify(labelmeFormat, null, 2));
+
+                    const jsonFilename = image.name.replace(/\.[^/.]+$/, ".json");
+                    zip.file(jsonFilename, JSON.stringify(labelmeFormat, null, 2));
                 }
             });
 
-            const blob = await zip.generateAsync({ type: "blob" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'annotations.zip';
-            a.click();
-            URL.revokeObjectURL(url);
+            try {
+                // 生成ZIP文件
+                const blob = await zip.generateAsync({ type: "blob" });
+
+                // 使用File System Access API保存文件
+                if ('showSaveFilePicker' in window) {
+                    const options = {
+                        types: [
+                            {
+                                description: 'ZIP File',
+                                accept: { 'application/zip': ['.zip'] },
+                            },
+                        ],
+                    };
+
+                    // 显示保存文件对话框
+                    const fileHandle = await window.showSaveFilePicker(options);
+
+                    // 创建可写的文件
+                    const writableStream = await fileHandle.createWritable();
+                    await writableStream.write(blob);
+                    await writableStream.close();
+                } else {
+                    // 如果浏览器不支持 File System Access API，使用默认下载
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'annotations.zip';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+            } catch (error) {
+                console.error('Error saving annotations:', error);
+                alert('Error saving annotations. Please try again.');
+            }
         }
+
+
 
         function navigateImage(direction) {
             const newIndex = currentImageIndex + direction;
